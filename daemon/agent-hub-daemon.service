@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Hub Daemon (Status/Kommandos via GitHub)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -u %h/projects/agent_hub/daemon/agent_hub_daemon.py
+Restart=always
+RestartSec=20
+Environment=NO_CLAUDE_AUTOSTART=1
+
+[Install]
+WantedBy=default.target

@@ -112,6 +112,23 @@ def collect(extra):
     return res
 
 
+def manual_sessions():
+    """Laufende Claude-Sitzungen, die NICHT von einer claude-agent@-Unit gehalten werden (nur Anzeige)."""
+    out = []
+    for f in (Path.home() / ".claude/sessions").glob("*.json"):
+        try:
+            d = json.loads(f.read_text())
+            pid = int(d.get("pid") or f.stem)
+            if not Path(f"/proc/{pid}").exists() or "claude-agent@" in Path(f"/proc/{pid}/cgroup").read_text():
+                continue
+            out.append({"pid": pid, "project": Path(d.get("cwd", "")).name, "name": d.get("name") or "",
+                        "remote": bool(d.get("bridgeSessionId")), "status": d.get("status"),
+                        "updated": d.get("updatedAt")})
+        except Exception:
+            continue
+    return sorted(out, key=lambda s: (s["project"], s["pid"]))
+
+
 def startable():
     """Projektordner, für die eine claude-agent@-Instanz gestartet werden darf."""
     return sorted(p.name for p in PROJECTS.iterdir() if p.is_dir() and not p.name.startswith((".", "_")))
@@ -154,14 +171,14 @@ def main():
                     dirty = True
                 STATE.write_text(json.dumps(sorted(done)[-500:]))
             agents = collect(extra)
-            sig = json.dumps(agents, sort_keys=True, default=str)
+            sig = json.dumps([agents, [(s['pid'], s['status']) for s in manual_sessions()]], sort_keys=True, default=str)
             sig = re.sub(r'"uptime_s": \d+', '', sig)
             now = time.time()
             if (sig != last_sig or dirty or now - last_write > HEARTBEAT) and now - last_write >= MIN_WRITE_GAP:
                 for k in sorted(results)[:-50]:
                     results.pop(k)
                 gh.put("status.json", {"host": host, "updated": int(now * 1000), "agents": agents,
-                                       "startable": startable(), "results": results},
+                                       "startable": startable(), "sessions": manual_sessions(), "results": results},
                        "status")
                 last_sig, last_write = sig, now
         except Exception as e:

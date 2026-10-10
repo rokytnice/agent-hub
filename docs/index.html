@@ -20,6 +20,7 @@ input{width:100%}#msg{color:var(--warn);min-height:20px;margin:6px 0;font-size:1
 </div>
 <div id="msg"></div>
 <div id="list"></div>
+<div id="sess"></div>
 <div class="card" id="addbox" hidden><div class="row"><span class="name">Weiteren Agenten starten</span><select id="sel"></select><button id="add">Starten</button></div></div>
 <p class="meta"><a href="#" id="logout" style="color:var(--dim)">Token entfernen</a></p>
 <script>
@@ -60,6 +61,12 @@ function render(d){
  const have=new Set(d.agents.map(a=>a.unit.replace(/^claude-agent@|\.service$/g,"")));
  const s=$("sel");s.innerHTML="";for(const n of d.startable||[])if(!have.has(n))s.add(new Option(n,n));
  $("addbox").hidden=!s.options.length;
+ const S=$("sess");S.innerHTML="";const ss=d.sessions||[];
+ if(ss.length){S.innerHTML='<p class="meta">Manuell gestartete Sitzungen (nur Anzeige, ohne Start/Stopp)</p>';
+  for(const x of ss){const e=document.createElement("div");e.className="card";
+   e.innerHTML='<div class="row"><span class="dot on"></span><span class="name"></span><span class="meta"></span></div>';
+   e.querySelector(".name").textContent=x.project||"?";
+   e.querySelector(".meta").textContent=(x.remote?"Remote Control":"lokal")+" · "+(x.status||"")+" · PID "+x.pid;S.appendChild(e)}}
 }
 async function send(unit,action){
  const id=Math.random().toString(36).slice(2)+Date.now().toString(36);

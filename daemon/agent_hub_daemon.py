@@ -129,6 +129,124 @@ def manual_sessions():
     return sorted(out, key=lambda s: (s["project"], s["pid"]))
 
 
+def _short(s, n=160):
+    s = re.sub(r"\s+", " ", str(s or "")).strip()
+    return s[:n]
+
+
+def collect_board():
+    """Kanban-Karten (todo/doing/done) aus Hintergrund-Jobs, personal_agent und Sitzungs-Todo-Listen."""
+    cards, now = [], time.time()
+    # 1) Claude-Hintergrund-Jobs
+    for f in (Path.home() / ".claude/jobs").glob("*/state.json"):
+        try:
+            d = json.loads(f.read_text())
+            st = d.get("state")
+            col = {"working": "doing", "running": "doing", "busy": "doing", "blocked": "doing",
+                   "queued": "todo", "pending": "todo", "todo": "todo"}.get(st, "done")
+            cards.append({"id": "job-" + f.parent.name, "col": col, "src": "Claude-Job",
+                          "title": _short(d.get("name") or d.get("intent") or f.parent.name, 90),
+                          "detail": _short(d.get("detail")), "badge": "wartet auf dich" if st == "blocked" else st,
+                          "needs": _short(d.get("needs"), 200) if st == "blocked" else "",
+                          "ts": int(f.stat().st_mtime * 1000)})
+        except Exception:
+            continue
+    # 2) personal_agent: laufende/wartende Jobs und letzte Scheduler-Läufe (7 Tage)
+    pa = PROJECTS / "personal_agent" / "data"
+    try:
+        cj = json.loads((pa / "current_jobs.json").read_text())
+        for k, col in (("running", "doing"), ("queued", "todo")):
+            for j in cj.get(k, []):
+                cards.append({"id": f"pa-{k}-{j.get('id') or j.get('title')}", "col": col, "src": "personal_agent",
+                              "title": _short(j.get("title") or j.get("task_id") or "Job", 90),
+                              "detail": _short(j.get("agent") or ""), "badge": k, "ts": int(now * 1000)})
+    except Exception:
+        pass
+    try:
+        for tid, v in json.loads((pa / "scheduler_state.json").read_text()).items():
+            lr = v.get("last_run")
+            if not lr:
+                continue
+            ts = time.mktime(time.strptime(lr[:19], "%Y-%m-%dT%H:%M:%S"))
+            if now - ts < 7 * 86400:
+                cards.append({"id": "sched-" + tid, "col": "done", "src": "Scheduler", "title": tid,
+                              "detail": f"{v.get('last_status')} · {v.get('last_duration_seconds')} s",
+                              "badge": v.get("last_status"), "ts": int(ts * 1000)})
+    except Exception:
+        pass
+    # 3) Todo-Listen aus Sitzungs-Transkripten (nur Sitzungen der letzten 24 h)
+    try:
+        for f in (Path.home() / ".claude/projects").glob("*/*.jsonl"):
+            if now - f.stat().st_mtime > 86400:
+                continue
+            with open(f, "rb") as fh:
+                fh.seek(max(0, f.stat().st_size - 3_000_000))
+                tail = fh.read().decode("utf-8", "ignore")
+            idx = tail.rfind('"name":"TodoWrite"')
+            if idx < 0:
+                continue
+            m = re.search(r'"todos":(\[.*?\])\s*[,}]', tail[idx:idx + 20000], re.S)
+            if not m:
+                continue
+            proj = f.parent.name.split("-projects-")[-1]
+            for i, td in enumerate(json.loads(m.group(1))):
+                col = {"completed": "done", "in_progress": "doing"}.get(td.get("status"), "todo")
+                cards.append({"id": f"todo-{f.stem[:8]}-{i}", "col": col, "src": "Todo · " + proj,
+                              "title": _short(td.get("content") or td.get("activeForm"), 120), "detail": "",
+                              "badge": "", "ts": int(f.stat().st_mtime * 1000)})
+    except Exception:
+        pass
+    # 4) Sitzungen, die gerade arbeiten
+    for s in manual_sessions():
+        if s.get("status") == "busy":
+            cards.append({"id": f"sess-{s['pid']}", "col": "doing", "src": "Sitzung", "title": s["project"] or "?",
+                          "detail": "arbeitet gerade", "badge": "busy", "ts": int(now * 1000)})
+    order = {"doing": 0, "todo": 1, "done": 2}
+    cards.sort(key=lambda c: (order[c["col"]], -c["ts"]))
+    out = {"todo": [], "doing": [], "done": []}
+    for c in cards:
+        if len(out[c["col"]]) < 40:
+            out[c["col"]].append(c)
+    return out
+
+
+def collect_crons():
+    jobs = []
+    try:
+        for line in sh("crontab", "-l").stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("@"):
+                sched, _, cmd = line.partition(" ")
+            else:
+                parts = line.split(None, 5)
+                sched, cmd = " ".join(parts[:5]), parts[5] if len(parts) > 5 else ""
+            jobs.append({"kind": "cron", "name": _short(Path(cmd.split()[0]).name if cmd else "?", 60),
+                         "when": sched, "detail": _short(cmd, 120), "enabled": True})
+    except Exception:
+        pass
+    try:
+        out = sh("systemctl", "--user", "list-timers", "--all", "--output=json").stdout
+        for t in json.loads(out):
+            nxt = t.get("next") or 0
+            jobs.append({"kind": "timer", "name": t.get("unit", "?"), "when": "",
+                         "next": int(nxt / 1000) if nxt else None,
+                         "last": int((t.get("last") or 0) / 1000) or None,
+                         "detail": _short(t.get("activates"), 80), "enabled": True})
+    except Exception:
+        pass
+    try:
+        cfg = json.loads((PROJECTS / "personal_agent/config/agents.json").read_text())
+        for aid, a in cfg.get("agents", {}).items():
+            for tk in a.get("scheduled_tasks", []):
+                jobs.append({"kind": "scheduler", "name": f"{aid}/{tk.get('id')}", "when": tk.get("cron", ""),
+                             "detail": "personal_agent", "enabled": bool(tk.get("enabled"))})
+    except Exception:
+        pass
+    return jobs[:150]
+
+
 def startable():
     """Projektordner, für die eine claude-agent@-Instanz gestartet werden darf."""
     return sorted(p.name for p in PROJECTS.iterdir() if p.is_dir() and not p.name.startswith((".", "_")))
@@ -171,14 +289,14 @@ def main():
                     dirty = True
                 STATE.write_text(json.dumps(sorted(done)[-500:]))
             agents = collect(extra)
-            sig = json.dumps([agents, [(s['pid'], s['status']) for s in manual_sessions()]], sort_keys=True, default=str)
+            sig = json.dumps([agents, [(s['pid'], s['status']) for s in manual_sessions()], collect_board(), collect_crons()], sort_keys=True, default=str)
             sig = re.sub(r'"uptime_s": \d+', '', sig)
             now = time.time()
             if (sig != last_sig or dirty or now - last_write > HEARTBEAT) and now - last_write >= MIN_WRITE_GAP:
                 for k in sorted(results)[:-50]:
                     results.pop(k)
                 gh.put("status.json", {"host": host, "updated": int(now * 1000), "agents": agents,
-                                       "startable": startable(), "sessions": manual_sessions(), "results": results},
+                                       "startable": startable(), "sessions": manual_sessions(), "board": collect_board(), "crons": collect_crons(), "results": results},
                        "status")
                 last_sig, last_write = sig, now
         except Exception as e:

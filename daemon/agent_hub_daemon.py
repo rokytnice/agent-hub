@@ -248,6 +248,24 @@ def collect_crons():
     return jobs[:150]
 
 
+def all_projects(agents, sessions):
+    """Alle Projektordner unter ~/projects mit Unit-Status und Zahl manuell gestarteter Sitzungen."""
+    units = {a["unit"][len("claude-agent@"):-len(".service")]: a for a in agents if a["unit"].startswith("claude-agent@")}
+    manual = {}
+    for s in sessions:
+        manual[s["project"]] = manual.get(s["project"], 0) + 1
+    out = []
+    for p in sorted(PROJECTS.iterdir(), key=lambda x: x.name.lower()):
+        if not p.is_dir() or p.name.startswith((".", "_")):
+            continue
+        u = units.get(p.name)
+        out.append({"name": p.name, "active": u["active"] if u else None, "sub": u["sub"] if u else None,
+                    "uptime_s": u["uptime_s"] if u else None, "mem_mb": u["mem_mb"] if u else None,
+                    "manual": manual.get(p.name, 0), "claude_md": (p / "CLAUDE.md").exists(),
+                    "git": (p / ".git").exists()})
+    return out
+
+
 def startable():
     """Projektordner, für die eine claude-agent@-Instanz gestartet werden darf."""
     return sorted(p.name for p in PROJECTS.iterdir() if p.is_dir() and not p.name.startswith((".", "_")))
@@ -297,7 +315,7 @@ def main():
                 for k in sorted(results)[:-50]:
                     results.pop(k)
                 gh.put("status.json", {"host": host, "updated": int(now * 1000), "agents": agents,
-                                       "startable": startable(), "sessions": manual_sessions(), "board": collect_board(), "crons": collect_crons(), "results": results},
+                                       "startable": startable(), "projects": all_projects(agents, manual_sessions()), "sessions": manual_sessions(), "board": collect_board(), "crons": collect_crons(), "results": results},
                        "status")
                 last_sig, last_write = sig, now
         except Exception as e:

@@ -222,7 +222,8 @@ def collect_crons():
             else:
                 parts = line.split(None, 5)
                 sched, cmd = " ".join(parts[:5]), parts[5] if len(parts) > 5 else ""
-            jobs.append({"kind": "cron", "name": _short(Path(cmd.split()[0]).name if cmd else "?", 60),
+            scripts = re.findall(r"[\w./-]+\.(?:sh|py)\b", cmd)
+            jobs.append({"kind": "cron", "name": _short(Path(scripts[0]).name if scripts else (Path(cmd.split()[0]).name if cmd else "?"), 60),
                          "when": sched, "detail": _short(cmd, 120), "enabled": True})
     except Exception:
         pass
@@ -231,8 +232,8 @@ def collect_crons():
         for t in json.loads(out):
             nxt = t.get("next") or 0
             jobs.append({"kind": "timer", "name": t.get("unit", "?"), "when": "",
-                         "next": int(nxt / 1000) if nxt else None,
-                         "last": int((t.get("last") or 0) / 1000) or None,
+                         "next": int(nxt / 1e6) if nxt else None,
+                         "last": int((t.get("last") or 0) / 1e6) or None,
                          "detail": _short(t.get("activates"), 80), "enabled": True})
     except Exception:
         pass
